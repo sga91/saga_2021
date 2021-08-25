@@ -1,0 +1,166 @@
+---
+title: "Figure S3"
+author: "Sergio Garcia-Moreno Alcantara (sga@stowers.org) "
+date: '`r format(Sys.Date(), "%B %d, %Y")`'
+output:
+  pdf_document:
+  html_document:
+    depth: 3
+    theme: sandstone
+    toc: yes
+    toc_float: yes
+    code_folding: "hide"
+header-includes:
+- \usepackage{fancyhdr}
+- \usepackage{lipsum}
+- \pagestyle{fancy}
+- \fancyfoot[CO,CE]{1028-01444-003-001}
+- \fancyfoot[LE,RO]{\thepage}
+- \fancypagestyle{plain}{\pagestyle{fancy}}
+editor_options: 
+  chunk_output_type: inline
+---
+
+# Aim
+
+The aim of this analysis is to investigate whether there are differences in the occupancy of the SAGA core module at different promoter types in the ovaries
+
+# Enviroment setup
+
+Set working directory and load required libraries and lab functions
+
+```{r setup, warning=F, message=F, tidy=TRUE}
+
+setwd("/n/projects/sga/analysis/SAGA/saga_publication/")
+options(knitr.figure_dir = "plots/figure_s3/")
+
+#Standard packages
+library(GenomicAlignments); library(GenomicRanges); library(Biostrings); library(BSgenome.Dmelanogaster.UCSC.dm6);
+library(TxDb.Dmelanogaster.UCSC.dm6.ensGene); library(dplyr); library(reshape2); library(plyranges); library(CAGEr); 
+library(magrittr); library(ggplot2); library(cowplot); library(ggseqlogo); library(gridExtra); library(ggpubr)
+
+
+#Lab sources
+source("./shared_code/granges_common.r")
+source("./shared_code/metapeak_common.r")
+source("./shared_code/knitr_common.r")
+
+```
+
+# Analysis
+
+## 1. Loading samples and necessary data sets
+
+```{r load samples, tidy=TRUE}
+
+sample_list <- read.csv("./chipseq_samples.csv", sep=";")
+
+load_bigwig <- function(sample_list){
+
+          bw_path <- function(path) {
+     path = path
+            }
+     sample_list %>%
+     mutate(list = purrr::map(as.character(path), bw_path)
+     ) %>%  pull(list)
+ }
+
+bw_list <- load_bigwig(sample_list)
+names(bw_list) <- sample_list$short_name
+
+tss <- get(load("./rdata/dm6_mrna_ovaries_tss.RData"))
+
+motif_list_ovaries <- get(load("./rdata/motif_list_ovaries.RData"))
+
+```
+
+## 2. Generate a metapeak plot for each SAGA core subunits at the different promoter types
+
+```{r metapeak, warning=F, message=F, fig.height=8, fig.width=8, tidy=TRUE}
+
+## Calculate the average signal per factor per base pair at different promoter types
+
+promoter_type_metapeak_df <- mclapply(names(motif_list_ovaries), function(x){
+  motif <- motif_list_ovaries[[x]]
+  mclapply(names(bw_list), function(y){
+  bw <- bw_list[[y]]
+  standard_metapeak(motif, bw, 1000, 1001, paste(x,"at",y), NA)
+}, mc.cores = 10)
+  }, mc.cores = 10) %>% 
+  do.call(c, .) %>% 
+  bind_rows()
+
+promoter_type_metapeak_df %<>% 
+  mutate(., factor=gsub(".* ", "", promoter_type_metapeak_df$sample_name)) %<>% 
+  mutate(., motif=gsub(" .*", "", promoter_type_metapeak_df$sample_name))
+
+## Setting the plotting order
+
+sample_levels <- c("ada2b", "spt3",  "saf6", "wda", "pol2")
+motif_levels <- c("tata", "dpe", "tct", "hk")
+
+## Create a plotting function
+
+plot_func <- function(df, name, color){
+          
+            df$motif <- factor(df$motif, levels = c(motif_levels))
+                  ggplot(df, aes(x=tss_distance, y=reads)) + 
+                   geom_area(aes(fill=factor), alpha=0.6, show.legend = F) + 
+                    scale_fill_manual(values = color) +
+                    geom_vline(xintercept=0, linetype=2) +
+                    facet_grid(factor~motif, scales = "free") +
+                      ggtitle(name) + 
+                      theme_cowplot() +
+                      theme(plot.title = element_text(size = 15, face = "bold")) +
+                      xlab("Distance from TSS (bp)") + ylab("Average RPM")
+}
+
+plot_func(promoter_type_metapeak_df, "SAGA metapeaks", c("#C62606", "#6D0068", "#0B2E9B", "#044F2A", "#AB2A35"))
+
+```
+
+## 3. Plot the signal distribution of each SAGA core subunit at the different promoter types
+
+Signal was calculated as max height of the peaks for each promoter in 500 bp window centered at the TSS
+
+```{r boxplot, warning=F, message=F, fig.height=8, fig.width=3, tidy=TRUE}
+
+#Make a data frame containing transcript ID and total signal per gene and promoter type
+
+sig_df <- mclapply(names(motif_list_ovaries), function(x){
+                      
+                      motif <- motif_list_ovaries[[x]]
+                      mclapply(names(bw_list), function(y){
+                      bw <- bw_list[[y]]
+                
+                      df <- data.frame(fb_t_id = motif$fb_t_id, 
+                                       signal = regionMaxs(resize(motif, 501, "center"), bw),
+                                       sample = y,
+                                       motif = x)
+                      df
+                      }, mc.cores = 5)
+                  }, mc.cores = 5) %>% do.call(c, .) %>% bind_rows()
+
+sig_df$motif <- factor(sig_df$motif, levels = motif_levels)
+sig_df$sample <- factor(sig_df$sample, levels = sample_levels)
+
+sig_df <- filter(sig_df,signal>=0)
+
+boxplot <- ggplot(sig_df,  aes(motif, log2(signal+1), fill=motif)) + 
+  geom_boxplot(alpha=0.7)+
+  theme_cowplot() +
+  scale_fill_manual(values = c("indianred3", "#EE962B", "#228232", "#2C699B")) +
+  ggtitle("SAGA total signal at promoter types",) +
+  facet_wrap(~sample, scales = "free_y", ncol=1) +
+  theme(plot.title = element_text(size = 15, face = "bold")) +
+  xlab("Distance to TSS (bp)") + ylab("RPM (log2)")
+
+boxplot
+
+```
+
+# Session Info
+
+```{r session}
+sessionInfo()
+```

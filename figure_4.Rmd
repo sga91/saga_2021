@@ -1,0 +1,372 @@
+---
+title: "Figure 4"
+author: "Sergio Garcia-Moreno Alcantara (sga@stowers.org) "
+date: '`r format(Sys.Date(), "%B %d, %Y")`'
+output:
+  pdf_document:
+  html_document:
+    depth: 3
+    theme: sandstone
+    toc: yes
+    toc_float: yes
+    code_folding: "hide"
+header-includes:
+- \usepackage{fancyhdr}
+- \usepackage{lipsum}
+- \pagestyle{fancy}
+- \fancyfoot[CO,CE]{1028-01444-003-001}
+- \fancyfoot[LE,RO]{\thepage}
+- \fancypagestyle{plain}{\pagestyle{fancy}}
+editor_options: 
+  chunk_output_type: console
+---
+
+# Aim
+
+Analysis of SAGA occupancy at active core promoters in the Drosophila ovaries
+
+# Enviroment setup
+
+Set working directory and load required libraries and lab functions
+
+```{r setup, warning=F, message=F, tidy=TRUE, tidy=TRUE}
+
+setwd("/n/projects/sga/analysis/SAGA/saga_publication/")
+options(knitr.figure_dir = "plots/figure_4/")
+
+#Standard packages
+library(GenomicAlignments); library(GenomicRanges); library(Biostrings); library(BSgenome.Dmelanogaster.UCSC.dm6);
+library(TxDb.Dmelanogaster.UCSC.dm6.ensGene); library(dplyr); library(reshape2); library(plyranges); library(CAGEr); 
+library(magrittr); library(ggplot2); library(cowplot); library(ggseqlogo); library(gridExtra); library(ggpubr)
+library(DEGreport); library(GGally)
+
+#Lab sources
+source("./shared_code/granges_common.r")
+source("./shared_code/metapeak_common.r")
+source("./shared_code/knitr_common.r")
+
+```
+
+# Analysis
+
+## 1. Loading samples and necessary data sets
+
+```{r load samples, tidy=TRUE}
+
+## Load sample list
+sample_list <- read.csv("./chipseq_samples.csv", sep=";")
+
+## Define a function to pull samples from the sample list
+load_bigwig <- function(sample_list){
+
+          bw_path <- function(path) {
+     path = path
+            }
+     sample_list %>%
+     mutate(list = purrr::map(as.character(path), bw_path)
+     ) %>%  pull(list)
+ }
+
+bw_list <- load_bigwig(sample_list)
+names(bw_list) <- sample_list$short_name
+
+## Load CAGE-seq data in ovaries
+cage_gr <- get(load("./rdata/dm6_mrna_ovaries_tss.RData"))
+
+## Load RNA-seq data in ovaries
+rna_seq_df <- read.csv("./rdata/RSEM_TPM_table.csv")[,1:5]
+colnames(rna_seq_df)[c(1,2)] <- c("fb_g_id", "gene_name")
+rna_seq_df$rnaseq_tpm <- floor(rowMeans(rna_seq_df[,3:5]))
+rna_seq_df <- filter(rna_seq_df, rnaseq_tpm >= 3) ## <- take genes with equal or more than 3 transcripts per million (TPM)
+rna_seq_df <- rna_seq_df[,c(1,6)]
+
+## Make a TSS object where there is active transcription based on both, RNA-seq and CAGE-seq data
+tss <- merge(cage_gr, rna_seq_df, by="fb_g_id") %>%
+  makeGRangesFromDataFrame(., ignore.strand = F, keep.extra.columns = T)
+
+```
+
+## 2. Generate a occupancy heatmap for SAGA subunits at the top 4000 genes with the highest wda occupancy
+
+```{r heatmap_wda, warning=F, message=F, fig.height=5, fig.width=8, tidy=TRUE}
+
+tss$wda <- regionSums(resize(tss, 1001, "center"), bw_list$wda)
+high_tss <- tss[order(tss$wda, decreasing = T)[1:4000]]
+
+bp_signal_matrix_list <- mclapply(names(bw_list), function(x){
+  
+  bw <- bw_list[[x]]
+  bp_signal_matrix <- standard_metapeak_matrix(regions.gr = high_tss, sample.cov = bw, upstream = 2000, downstream = 2001)
+  bp_signal_matrix
+  
+}, mc.cores = 5)
+
+matrix_normalization <- function(matrix){
+  
+  max.per.gene.pos <- apply(matrix, 1, function(x){quantile(x, 0.95)})
+  min.per.gene.pos <- apply(matrix, 1, function(x){quantile(x, 0.50)})
+
+  matrix.p <- matrix
+  matrix.p [matrix.p <= min.per.gene.pos] <- NA #Remove all values that are below 50th percentile
+  matrix.p <- pmin(matrix.p / max.per.gene.pos,1) #Re-normalize values that remain.
+
+  matrix.p
+  
+}
+
+format_matrix <- function(matrix, sample_name){
+
+  df <- as.data.frame(matrix, sample_name)
+  colnames(df) <- as.numeric(-2000:2000)
+  df$fb_t_id <- 1:nrow(df)
+  df$sample <- sample_name
+
+  melted_df <- df %>% data.table %>%
+    melt.data.table(df, id.vars = c("fb_t_id", "sample"), variable.name="tss_distance", value.name="signal", measure.vars = paste0(as.numeric(-2000:2000)))
+  
+  melted_df <- melted_df[!is.na(melted_df$signal),]
+  melted_df$tss_distance <- as.numeric(as.character(melted_df$tss_distance))
+  melted_df
+
+}
+
+bp_signal_matrix_norm <- lapply(bp_signal_matrix_list, matrix_normalization)
+names(bp_signal_matrix_norm) <- names(bw_list)
+
+bp_signal_df <- lapply(names(bp_signal_matrix_norm), function(x){
+  
+  mat <- bp_signal_matrix_norm[[x]]
+  df <- format_matrix(mat, x)
+  df
+
+}) %>% bind_rows()
+
+plot_heatmap <- function(df, col, name){
+  
+  x <- ggplot(df, aes(tss_distance, fb_t_id, fill=signal)) + 
+    geom_raster(show.legend = F) + scale_fill_gradient(low="white", high = col) +
+    theme(legend.position = "none", axis.text.y = element_blank()) +
+    geom_vline(xintercept = 0, linetype = 2) +
+    ggtitle(name) +
+    scale_y_reverse() +
+    xlab("Distance to TSS (bp)") + ylab("Genes") +
+    theme_classic()
+  x
+}
+
+wda_htm <- plot_heatmap(filter(bp_signal_df, sample == "wda"), "#C62606", "wda")
+saf6_htm <- plot_heatmap(filter(bp_signal_df, sample == "spt3"), "#6D0068", "spt3")
+spt3_htm <- plot_heatmap(filter(bp_signal_df, sample == "saf6"), "#0B2E9B", "saf6")
+ada2b_htm <- plot_heatmap(filter(bp_signal_df, sample == "ada2b"), "#044F2A", "ada2b")
+pol2_htm <- plot_heatmap(filter(bp_signal_df, sample == "pol2"), "#AB2A35", "pol2")
+
+plot_grid(wda_htm, saf6_htm, spt3_htm, ada2b_htm, pol2_htm, ncol = 5)
+
+```
+
+## 3. Generate a occupancy heatmap for SAGA subunits at the top 4000 genes with the highest expression
+
+```{r heatmap_expression, warning=F, message=F, fig.height=5, fig.width=8, eval = FALSE, echo = FALSE, tidy=TRUE}
+
+high_tss <- tss[order(tss$rnaseq_tpm, decreasing = T)[1:4000]]
+
+bp_signal_matrix_list <- mclapply(names(bw_list), function(x){
+  
+  bw <- bw_list[[x]]
+  bp_signal_matrix <- standard_metapeak_matrix(regions.gr = high_tss, sample.cov = bw, upstream = 2000, downstream = 2001)
+  bp_signal_matrix
+  
+}, mc.cores = 5)
+
+bp_signal_matrix_norm <- lapply(bp_signal_matrix_list, matrix_normalization)
+names(bp_signal_matrix_norm) <- names(bw_list)
+
+bp_signal_df <- lapply(names(bp_signal_matrix_norm), function(x){
+  
+  mat <- bp_signal_matrix_norm[[x]]
+  df <- format_matrix(mat, x)
+  df
+
+}) %>% bind_rows()
+
+wda_htm <- plot_heatmap(filter(bp_signal_df, sample == "wda"), "#C62606")
+saf6_htm <- plot_heatmap(filter(bp_signal_df, sample == "saf6"), "#6D0068")
+spt3_htm <- plot_heatmap(filter(bp_signal_df, sample == "spt3"), "#0B2E9B")
+ada2b_htm <- plot_heatmap(filter(bp_signal_df, sample == "ada2b"), "#044F2A")
+pol2_htm <- plot_heatmap(filter(bp_signal_df, sample == "pol2"), "#AB2A35")
+
+plot_grid(wda_htm, saf6_htm, spt3_htm, ada2b_htm, pol2_htm, ncol = 5)
+
+```
+
+## 4. Plot metapeaks
+
+```{r metapeak, warning=F, message=F, fig.height=3, fig.width=12, tidy=TRUE}
+
+metapeak_df <- mclapply(names(bw_list), function(x){
+  
+  bw <- bw_list[[x]]
+  df <- standard_metapeak(gr = high_tss, sample = bw, upstream = 1000, downstream = 1001, sample_name = x, smooth = NA)
+  df
+  
+}, mc.cores = 5) %>%
+  bind_rows()
+
+metapeak_df$sample_name <- factor(metapeak_df$sample_name, levels = c("wda", "saf6", "spt3", "ada2b", "pol2"))
+
+ggplot(metapeak_df, aes(tss_distance, reads, fill=sample_name)) + 
+  geom_area() + scale_fill_manual(values = c("#C62606", "#6D0068", "#0B2E9B", "#044F2A", "#AB2A35")) +
+  geom_vline(xintercept = 0, linetype = 2) +
+  facet_wrap(~sample_name, scales = "free", ncol = 5) + theme_classic()
+
+```
+
+## 5. Plot the correlation between SAGA core subunits
+
+```{r corplot, warning=F, message=F, fig.height=6, fig.width=6, eval = FALSE, echo = FALSE, tidy=TRUE}
+
+sig_df <- mclapply(names(bw_list), function(x){
+  
+  bw <- bw_list[[x]]
+  df <- data.frame(fb_t_id=tss$fb_t_id,
+                   signal=regionMaxs(resize(tss, 1001, "center"), bw))
+  colnames(df)[2] <- x
+  df
+}, mc.cores = 4) %>%
+  reshape::merge_recurse()
+
+filtered_df <- sig_df[apply(sig_df[,2:5],1,function(x)all(x>=0)),]
+filtered_df[,2:5] <- log2(filtered_df[,2:5]+1)
+
+motif_df_1mm <- get(load("./rdata/motif_df_ovaries_1mm.RData"))
+merged_df <- merge(filtered_df, motif_df_1mm, by="fb_t_id")
+
+merged_df %<>% mutate(motif = ifelse(TATA == TRUE,"TATA", 
+                              ifelse(MTE | DPE_K | DPE_O | DPE_Z | PB == T, "DPG", 
+                              ifelse(DRE | TCT | Motif6 | Motif1 | Motif7 == TRUE, "Housekeeping" , 
+                              ifelse(Inr == TRUE, "Inr", "Others")))))
+
+merged_df <- merged_df[,c(1:5,19)]
+
+ggcorr(filtered_df[,2:5], palette = "RdBu", label = TRUE)
+
+my_dens <- function(data, mapping, ...) {
+  ggplot(data = data, mapping=mapping) +
+    geom_density(..., alpha = 0.7) #+
+    #scale_color_manual(values=c("blue", "orange", "green", "black", "red"))
+}
+
+my_points <- function(data, mapping, ...) {
+  ggplot(data = data, mapping=mapping) +
+    geom_point(..., position="identity", alpha = 0.4, size = 0.3) + 
+    stat_smooth(..., method=lm, se = TRUE, color = "darkred", size = 0.8, fill="blue") #+
+    #scale_color_manual(values=c("blue", "orange", "green", "black", "red"))
+}
+
+simple_corplot <- ggpairs(merged_df, columns = 2:5,
+        lower = list(continuous = my_points),
+        diag = list(continuous = my_dens))
+
+simple_corplot
+
+motif_corplot <- ggpairs(merged_df, columns = 2:5, ggplot2::aes(color=motif),
+        lower = list(continuous = my_points),
+        diag = list(continuous = my_dens))
+
+for(i in 1:motif_corplot$nrow) {
+  for(j in 1:motif_corplot$ncol){
+    motif_corplot[i,j] <- motif_corplot[i,j] + 
+        scale_color_manual(values=c("blue", "orange", "green", "black", "red"))  
+  }
+}
+
+motif_corplot
+
+```
+
+## 6. Plot distribution of SAGA occupancy levels across quantiles of RNA-seq expression data
+
+```{r rna_quantile, warning=F, message=F, fig.height=5, fig.width=7, tidy=TRUE}
+
+rna_tss <- tss[order(tss$rnaseq_tpm, decreasing = T)]
+rna_tss$rnaseq_quantile <- ntile(rna_tss$rnaseq_tpm, 10)
+
+#Make a data frame containing transcript ID and total signal per gene and promoter type
+
+sig_df <- mclapply(levels(as.factor(rna_tss$rnaseq_quantile)), function(x){
+                      
+                      quantile_gr <- subset(rna_tss, rnaseq_quantile == x)
+                      mclapply(names(bw_list), function(y){
+                      bw <- bw_list[[y]]
+
+                      df <- data.frame(fb_t_id = quantile_gr$fb_t_id, 
+                                       signal = regionMaxs(resize(quantile_gr, 501, "center"), bw),
+                                       sample = y,
+                                       rnaseq_quantile = x)
+                      df
+                      }, mc.cores = 5)
+                  }, mc.cores = 5) %>% do.call(c, .) %>% bind_rows()
+
+sig_df$rnaseq_quantile <- factor(sig_df$rnaseq_quantile, levels = c("10", "9", "8", "7", "6", "5", "4", "3", "2", "1"))
+sig_df$sample <- factor(sig_df$sample, levels = c("wda", "saf6", "spt3", "ada2b", "pol2"))
+#sig_df<-filter(sig_df,signal>=0)
+
+boxplot <- ggplot(sig_df,  aes(rnaseq_quantile, log2(signal+1), fill=rnaseq_quantile)) + 
+  geom_boxplot(alpha=0.7)+
+  theme_cowplot() +
+  #scale_fill_manual(values = c("indianred3", "#EE962B", "#228232", "#2C699B")) +
+  ggtitle("SAGA occupancy by RNA levels (RNA-seq)") +
+  facet_wrap(~sample, scales = "free_y", ncol=2) +
+  theme(plot.title = element_text(size = 15, face = "bold")) +
+  xlab("Distance to TSS (bp)") + ylab("log2 ratio (ChIP/Input)")
+
+boxplot
+
+```
+
+## 7. Plot distribution of SAGA occupancy levels across quantiles of CAGE-seq expression data
+
+```{r cage_quantile, warning=F, message=F, fig.height=5, fig.width=7, tidy=TRUE}
+
+cage_tss <- tss[order(tss$score, decreasing = T)]
+cage_tss$cageseq_quantile <- ntile(cage_tss$score, 10)
+
+#Make a data frame containing transcript ID and total signal per gene and promoter type
+
+sig_df <- mclapply(levels(as.factor(cage_tss$cageseq_quantile)), function(x){
+                      
+                      quantile_gr <- subset(cage_tss, cageseq_quantile == x)
+                      mclapply(names(bw_list), function(y){
+                      bw <- bw_list[[y]]
+
+                      df <- data.frame(fb_t_id = quantile_gr$fb_t_id, 
+                                       signal = regionMaxs(resize(quantile_gr, 501, "center"), bw),
+                                       sample = y,
+                                       cageseq_quantile = x)
+                      df
+                      }, mc.cores = 5)
+                  }, mc.cores = 5) %>% do.call(c, .) %>% bind_rows()
+
+sig_df$cageseq_quantile <- factor(sig_df$cageseq_quantile, levels = c("10", "9", "8", "7", "6", "5", "4", "3", "2", "1"))
+sig_df$sample <- factor(sig_df$sample, levels = c("wda", "saf6", "spt3", "ada2b", "pol2"))
+#sig_df<-filter(sig_df,signal>=0)
+
+boxplot <- ggplot(sig_df,  aes(cageseq_quantile, log2(signal+1), fill=cageseq_quantile)) + 
+  geom_boxplot(alpha=0.7)+
+  theme_cowplot() +
+  #scale_fill_manual(values = c("indianred3", "#EE962B", "#228232", "#2C699B")) +
+  ggtitle("SAGA occupancy by CAGE levels (CAGE-seq)") +
+  facet_wrap(~sample, scales = "free_y", ncol=2) +
+  theme(plot.title = element_text(size = 15, face = "bold")) +
+  xlab("Distance to TSS (bp)") + ylab("log2 ratio (ChIP/Input)")
+
+boxplot
+
+```
+
+# Session Info
+
+```{r}
+sessionInfo()
+```
+

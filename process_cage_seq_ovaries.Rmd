@@ -1,0 +1,125 @@
+---
+title: "Annotate TSS from Drosophila melanogaster ovaries"
+author: "Jelly & Sergio Garcia-Moreno Alcantara (sga@stowers.org) "
+date: '`r format(Sys.Date(), "%B %d, %Y")`'
+output:
+  html_document:
+    depth: 3
+    theme: sandstone
+    toc: yes
+    toc_float: yes
+    code_folding: "hide"
+header-includes:
+- \usepackage{fancyhdr}
+- \usepackage{lipsum}
+- \pagestyle{fancy}
+- \fancyfoot[CO,CE]{1028-01444-003-001}
+- \fancyfoot[LE,RO]{\thepage}
+- \fancypagestyle{plain}{\pagestyle{fancy}}
+editor_options: 
+  chunk_output_type: console
+---
+
+# Aim
+
+The aim of this analysis is to annotate TSSs in the Drosophila Melanogaster ovaries using CAGE-seq data from the modEncode project.
+
+# Enviroment setup
+
+Set working directory and load required libraries and lab functions
+
+```{r setup, warning=F, message=F}
+
+setwd("/n/projects/sga/analysis/SAGA/publication/")
+options(knitr.figure_dir = "plots/cage/")
+
+#Standard packages
+library(GenomicAlignments); library(GenomicRanges); library(Biostrings); library(BSgenome.Dmelanogaster.UCSC.dm6);
+library(TxDb.Dmelanogaster.UCSC.dm6.ensGene); library(dplyr); library(reshape2); library(plyranges); library(CAGEr); library(magrittr); library(ggplot2); library(cowplot); library(ggseqlogo); library(gridExtra); library(ggpubr)
+
+
+#Lab sources
+source("./shared_code/granges_common.r")
+source("./shared_code/metapeak_common.r")
+source("./shared_code/knitr_common.r")
+
+```
+
+# Analysis
+
+## 1. Annotate and cluster TSSs from Drosophila melanogaster ovaries (dm6)
+
+```{r process cage}
+
+cage_ovaries_bam <- "./bam/cage_ovariesAligned.sortedByCoord.out.bam" # <- load CAGE-seq bam files (there is only 1 replicate)
+
+ce <- new("CAGEset"
+               , genomeName     = "BSgenome.Dmelanogaster.UCSC.dm6"
+               , inputFiles     = c(cage_ovaries_bam)
+               , inputFilesType = "bam"
+               , sampleLabels   = c("cage_ovaries_rep1"))
+
+getCTSS(ce, removeFirstG = F, correctSystematicG = F, nrCores = 30)
+CTSStagCountSE(ce)
+CTSScoordinatesGR(ce)
+CTSStagCountDF(ce)
+
+plotReverseCumulatives(ce, fitInRange = c(5, 10000), onePlot = TRUE)
+
+normalizeTagCount(ce, method = "powerLaw", fitInRange = c(5, 10000), alpha = 1.05, T = 10^6)
+
+#2 TMP treshold
+clusterCTSS(object = ce
+             , threshold = 2
+             , thresholdIsTpm = TRUE
+             , nrPassThreshold = 2
+             , method = "distclu"
+             , maxDist = 40
+             , removeSingletons = T
+             , keepSingletonsAbove = 5
+             , useMulticore = T
+             , nrCores = 30)
+
+cumulativeCTSSdistribution(ce, clusters = "tagClusters", useMulticore = T, nrCores = 30)
+quantilePositions(ce, clusters = "tagClusters", qLow = 0.1, qUp = 0.9, useMulticore = T, nrCores = 30)
+plotInterquantileWidth(ce, clusters = "tagClusters", tpmThreshold = 2, qLow = 0.1, qUp = 0.9)
+
+tss_clusters_gr <- granges(tagClustersGR(ce, "cage_ovaries_rep1", returnInterquantileWidth = TRUE,  qLow = 0.1, qUp = 0.9), use.mcols = T)
+
+tx_gtf <- import("./dmel-all-r6.33.gtf", format = "GTF")
+
+tx_df <- as.data.frame(subset(tx_gtf, type == "mRNA") %>%
+  .[,c("transcript_id", "gene_id", "gene_symbol")])
+colnames(tx_df)[6:8] <- c("fb_t_id", "fb_g_id", "gene_name")
+tx_df$seqnames <- gsub("^", "chr", tx_df$seqnames)
+
+tx_gr <- makeGRangesFromDataFrame(tx_df, keep.extra.columns = T, ignore.strand = F)
+valid_chr <- c("chr2L", "chr2R", "chr3L", "chr3R", "chr4","chrX", "chrY")
+seqlevels(tx_gr, pruning.mode="coarse") <- valid_chr
+
+# Find overlaps
+overlp_gr <- findOverlaps(tss_clusters_gr, tx_gr)
+
+# Features from gr1 with overlaps in gr2
+# Note: The same feature from gr1 can overlap with multiple features from gr2
+query_overlp <- tss_clusters_gr[queryHits(overlp_gr)]
+
+# Add the metadata from gr2
+mcols(query_overlp) <- cbind.data.frame(
+    mcols(query_overlp),
+    mcols(tx_gr[subjectHits(overlp_gr)]))
+
+gr_temp <- query_overlp[order(query_overlp$score, decreasing=T)] %>% 
+            .[!duplicated(paste(seqnames(.), start(.)))]
+gr_temp <- gr_temp[!duplicated(gr_temp$fb_t_id)]
+
+active_tss <- gr_temp[order(gr_temp$interquantile_width, decreasing = F)] # <- order based on interquantile width
+
+tss <- active_tss
+start(tss) <- tss$dominant_ctss
+end(tss) <- tss$dominant_ctss
+
+save(tss, file="./rdata/dm6_mrna_ovaries_tss.RData")
+
+```
+

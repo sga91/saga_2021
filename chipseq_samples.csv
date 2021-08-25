@@ -1,0 +1,6 @@
+﻿sample_name;short_name;path
+ovaries_wda_chipseq_merged_normalized;wda;./bw/oreR_ovaries_wda_chipseq_merged_ses_log2_normalized.bw
+ovaries_saf6_chipseq_merged_normalized;saf6;./bw/oreR_ovaries_saf6_chipseq_merged_ses_log2_normalized.bw
+ovaries_spt3_chipseq_merged_normalized;spt3;./bw/oreR_ovaries_spt3_chipseq_merged_ses_log2_normalized.bw
+ovaries_ada2b_chipseq_merged_normalized;ada2b;./bw/oreR_ovaries_ada2b_chipseq_merged_ses_log2_normalized.bw
+ovaries_pol2_chipseq_merged_normalized;pol2;./bw/w1118_ovaries_pol2_chipseq_ses_log2_normalized.bw

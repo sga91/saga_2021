@@ -1,0 +1,31 @@
+# Aim: Download Pol II chip-seq from Drosophila ovaries (w1118) and align it to dm6. Data from Fun Yang et al 2019.
+## SRR6168905 == w1118_ovaries_chip-seq_input; SRR6168909 == w1118_ovaries_chip-seq_pol2
+
+
+step1: download SRA files using prefetch function
+    ./saga_publication$ prefetch {SRR6168905,SRR6168909}
+
+step2: generate fastq files
+./saga_publication$ fastq-dump {SRR6168905,SRR6168909}
+
+step3: run fastqc on the fastq files
+  #check for the adapter sequences in fastq files
+  ./saga_publication$ fastqc {SRR6168905.fastq,SRR6168909.fastq}
+
+step4: align the fastq to dm6 using bowtie
+
+  ./saga_publication$ bowtie -S -p 20 --chunkmbs 512 \
+  -k 1 -m 1 -n 2 /n/projects/mw2098/genomes/dm6/bowtie_index/dm6 \
+  -q {SRR6168905.fastq,SRR6168909.fastq} | samtools view -F 4 -Sbo {w1118_ovaries_input.bam,w1118_ovaries_pol2.bam}
+
+step5: sort and index bam files
+  ./saga_publication$ samtools sort {w1118_ovaries_input.bam,w1118_ovaries_pol2.bam} \
+  -o {w1118_ovaries_input_sorted.bam,w1118_ovaries_pol2_sorted.bam}
+
+  ./saga_publication$ samtools index {w1118_ovaries_input_sorted.bam,w1118_ovaries_pol2_sorted.bam}
+
+step6: generate normalized bw files
+
+./saga_publication$ bamCompare -b1 w1118_ovaries_pol2_sorted.bam -b2 w1118_ovaries_input_sorted.bam \
+--scaleFactorsMethod SES --operation log2 --binSize 50 \
+-p 2 -o ./bw/w1118_ovaries_pol2_ses_log2_normalized.bw

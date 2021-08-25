@@ -1,0 +1,255 @@
+---
+title: "Figure 5"
+author: "Sergio Garcia-Moreno Alcantara (sga@stowers.org) "
+date: '`r format(Sys.Date(), "%B %d, %Y")`'
+output:
+  pdf_document:
+  html_document:
+    depth: 3
+    theme: sandstone
+    toc: yes
+    toc_float: yes
+    code_folding: "hide"
+header-includes:
+- \usepackage{fancyhdr}
+- \usepackage{lipsum}
+- \pagestyle{fancy}
+- \fancyfoot[CO,CE]{1028-01444-003-001}
+- \fancyfoot[LE,RO]{\thepage}
+- \fancypagestyle{plain}{\pagestyle{fancy}}
+editor_options: 
+  chunk_output_type: inline
+---
+
+# Aim
+
+The aim of this analysis is to investigate whether there are differences in the occupancy of the SAGA core module at different promoter types in Drosophila kc167 cells
+
+# Enviroment setup
+
+Set working directory and load required libraries and lab functions
+
+```{r setup, warning=F, message=F, tidy=TRUE}
+
+setwd("/n/projects/sga/analysis/SAGA/saga_publication/")
+options(knitr.figure_dir = "plots/figure_5/")
+
+#Standard packages
+library(GenomicAlignments); library(GenomicRanges); library(Biostrings); library(BSgenome.Dmelanogaster.UCSC.dm6);
+library(TxDb.Dmelanogaster.UCSC.dm6.ensGene); library(dplyr); library(reshape2); library(plyranges); library(CAGEr); 
+library(magrittr); library(ggplot2); library(cowplot); library(ggseqlogo); library(gridExtra); library(ggpubr)
+
+#Lab sources
+source("./shared_code/granges_common.r")
+source("./shared_code/metapeak_common.r")
+source("./shared_code/knitr_common.r")
+
+```
+
+# Analysis
+
+## 1. Loading samples and necessary data sets
+
+```{r load samples, tidy=TRUE}
+
+tbp_bw <- list(pos = "./bw/kc167_nt_tbp_nexus_1_normalized_positive.bw",
+               neg = "./bw/kc167_nt_tbp_nexus_1_normalized_negative.bw")
+wda_bw <- list(pos = "./bw/kc167_wda_nexus_2_normalized_positive.bw",
+               neg = "./bw/kc167_wda_nexus_2_normalized_negative.bw")
+adab2_bw <- list(pos = "./bw/kc167_adab2_nexus_1_normalized_positive.bw",
+                 neg = "./bw/kc167_adab2_nexus_1_normalized_negative.bw")
+saf11_bw <- list(pos = "./bw/kc167_saf11_nexus_1_normalized_positive.bw",
+                 neg = "./bw/kc167_saf11_nexus_1_normalized_negative.bw")
+saf6_bw <- list(pos = "./bw/kc167_saf6_nexus_1_normalized_positive.bw",
+                neg = "./bw/kc167_saf6_nexus_1_normalized_negative.bw")
+spt3_bw <- list(pos = "./bw/kc167_spt3_nexus_1_normalized_positive.bw",
+                neg = "./bw/kc167_spt3_nexus_1_normalized_negative.bw")
+trf2_bw <- list(pos = "./bw/kc167_dmso_trf2_nexus_merged_normalized_positive.bw",
+                neg = "./bw//kc167_dmso_trf2_nexus_merged_normalized_negative.bw")
+
+patchcap_bw <- list(pos = "./bw/kc_patchcap_nexus_positive.bw",
+                    neg = "./bw/kc_patchcap_nexus_negative.bw")
+
+motif_list_kc <- get(load("./rdata/motif_list_kc167.RData"))
+
+```
+
+## 2. Plot a metapeak for each SAGA core subunit at the different promoter types
+
+```{r metapeak, warning=F, message=F, fig.height=10, fig.width=10, tidy=TRUE}
+
+bw_list <- list(wda=wda_bw, adab2=adab2_bw, saf6=saf6_bw, spt3=spt3_bw, tbp=tbp_bw, trf2=trf2_bw)
+
+#bw_list <- list(tbp=tbp_bw, patchcap=patchcap_bw)
+
+## Calculate the average signal per factor per base pair at different promoter types
+
+promoter_type_metapeak_df <- mclapply(names(motif_list_kc), function(x){
+  motif <- motif_list_kc[[x]]
+  mclapply(names(bw_list), function(y){
+  bw <- bw_list[[y]]
+  exo_metapeak(motif, bw, 300, 301, paste(x,"at",y), 5)
+}, mc.cores = 5)
+  }, mc.cores = 5) %>% 
+  do.call(c, .) %>% 
+  bind_rows()
+
+promoter_type_metapeak_df %<>% 
+  mutate(., factor=gsub(".* ", "", promoter_type_metapeak_df$sample_name)) %<>% 
+  mutate(., motif=gsub(" .*", "", promoter_type_metapeak_df$sample_name))
+
+## Setting the plotting order
+
+sample_levels <- c("tbp", "trf2", "wda", "spt3", "saf6", "adab2")
+motif_levels <- c("tata", "dpe", "tct", "hk")
+
+## Create a plotting function
+
+plot_func <- function(df, name, color){
+          
+            df$motif <- factor(df$motif, levels = c(motif_levels))
+            df$factor <- factor(df$factor, levels = c(sample_levels))
+            
+                  ggplot(df, aes(x=tss_distance, y=reads)) + 
+                   geom_area(aes(fill=strand), alpha=0.6, show.legend = F) + 
+                    scale_fill_manual(values = color) +
+                    geom_vline(xintercept=0, linetype=2) +
+                    facet_grid(factor~motif, scales = "free") +
+                      ggtitle(name) + 
+                      theme_cowplot() +
+                      theme(plot.title = element_text(size = 15, face = "bold")) +
+                      xlab("Distance from TSS (bp)") + ylab("Average RPM")
+            }
+
+metapeak <- plot_func(promoter_type_metapeak_df, "SAGA ChIP-nexus metapeaks", c("grey", "grey"))
+
+```
+
+## 3. Plot the total signal distribution of each SAGA core subunit at the different promoter types
+
+Total signal was calculated as sum of the signal for each promoter and factor in 200 bp window centered at the TSS
+
+```{r boxplot, warning=F, message=F, fig.height=15, fig.width=10, tidy=TRUE}
+
+#Make a data frame containing transcript ID and total signal per gene and promoter type
+
+sig_df <- mclapply(names(motif_list_kc), function(x){
+                      
+                      motif <- motif_list_kc[[x]]
+                      mclapply(names(bw_list), function(y){
+                      bw <- bw_list[[y]]
+                
+                      df <- data.frame(fb_t_id = motif$fb_t_id, 
+                                       signal = nexus_regionSums(resize(motif, 201, "center"), bw),
+                                       sample = y,
+                                       motif = x)
+                      df
+                      }, mc.cores = 4)
+                  }, mc.cores = 4) %>% do.call(c, .) %>% bind_rows()
+
+sig_df$sample <- factor(sig_df$sample, levels = sample_levels)
+
+sig_df$motif <- factor(sig_df$motif, levels = motif_levels)
+sig_df$sample <- factor(sig_df$sample, levels = sample_levels)
+
+boxplot <- ggplot(sig_df,  aes(motif, log2(signal+1), fill=motif)) + 
+  geom_boxplot(alpha=0.7, show.legend = F)+
+  theme_cowplot() +
+  scale_fill_manual(values = c("indianred3", "#EE962B", "#228232", "#2C699B")) +
+  ggtitle("SAGA total signal at promoter types") +
+  facet_wrap(~sample, scales = "free_y", ncol=1) +
+  theme(plot.title = element_text(size = 15, face = "bold")) +
+  xlab("Distance to TSS (bp)") + ylab("RPM (log2)")
+
+#boxplot
+
+grid.arrange(metapeak, boxplot, widths=c(3,1))
+
+```
+
+## 4. Plot distribution of SAGA occupancy levels across quantiles of RNA-seq expression data
+
+```{r rna_quantile, warning=F, message=F, fig.height=8, fig.width=8, tidy=TRUE}
+
+tss <- get(load("./rdata/cage_kc167_tss_pLaw_3tpm.RData"))
+rna_tss <- tss[order(tss$RNAseq_tpm, decreasing = T)]
+rna_tss$rnaseq_quantile <- ntile(rna_tss$RNAseq_tpm, 10)
+
+#Make a data frame containing transcript ID and total signal per gene and promoter type
+
+sig_df <- mclapply(levels(as.factor(rna_tss$rnaseq_quantile)), function(x){
+                      
+                      quantile_gr <- subset(rna_tss, rnaseq_quantile == x)
+                      mclapply(names(bw_list), function(y){
+                      bw <- bw_list[[y]]
+
+                      df <- data.frame(fb_t_id = quantile_gr$fb_t_id, 
+                                       signal = nexus_regionSums(resize(quantile_gr, 201, "center"), bw),
+                                       sample = y,
+                                       rnaseq_quantile = x)
+                      df
+                      }, mc.cores = 4)
+                  }, mc.cores = 4) %>% do.call(c, .) %>% bind_rows()
+
+sig_df$rnaseq_quantile <- factor(sig_df$rnaseq_quantile, levels = c("10", "9", "8", "7", "6", "5", "4", "3", "2", "1"))
+#sig_df$sample <- factor(sig_df$sample, levels = c("wda", "saf6", "spt3", "ada2b"))
+#sig_df<-filter(sig_df,signal>=0)
+
+boxplot <- ggplot(sig_df,  aes(rnaseq_quantile, log2(signal+1), fill=rnaseq_quantile)) + 
+  geom_boxplot(alpha=0.7)+
+  theme_cowplot() +
+  #scale_fill_manual(values = c("indianred3", "#EE962B", "#228232", "#2C699B")) +
+  ggtitle("SAGA occupancy by RNA levels (RNA-seq)") +
+  facet_wrap(~sample, scales = "free_y", ncol=2) +
+  theme(plot.title = element_text(size = 15, face = "bold")) +
+  xlab("Distance to TSS (bp)") + ylab("RPM (log2)")
+
+boxplot
+
+```
+
+## 5. Plot distribution of SAGA occupancy levels across quantiles of CAGE-seq expression data
+
+```{r cage_quantile, warning=F, message=F, fig.height=8, fig.width=8, tidy=TRUE}
+
+cage_tss <- tss[order(tss$score, decreasing = T)]
+cage_tss$cageseq_quantile <- ntile(cage_tss$score, 10)
+
+#Make a data frame containing transcript ID and total signal per gene and promoter type
+
+sig_df <- mclapply(levels(as.factor(cage_tss$cageseq_quantile)), function(x){
+                      
+                      quantile_gr <- subset(cage_tss, cageseq_quantile == x)
+                      mclapply(names(bw_list), function(y){
+                      bw <- bw_list[[y]]
+
+                      df <- data.frame(fb_t_id = quantile_gr$fb_t_id, 
+                                       signal = nexus_regionSums(resize(quantile_gr, 201, "center"), bw),
+                                       sample = y,
+                                       cageseq_quantile = x)
+                      df
+                      }, mc.cores = 4)
+                  }, mc.cores = 4) %>% do.call(c, .) %>% bind_rows()
+
+sig_df$cageseq_quantile <- factor(sig_df$cageseq_quantile, levels = c("10", "9", "8", "7", "6", "5", "4", "3", "2", "1"))
+#sig_df$sample <- factor(sig_df$sample, levels = c("wda", "saf6", "spt3", "ada2b"))
+#sig_df<-filter(sig_df,signal>=0)
+
+boxplot <- ggplot(sig_df,  aes(cageseq_quantile, log2(signal+1), fill=cageseq_quantile)) + 
+  geom_boxplot(alpha=0.7)+
+  theme_cowplot() +
+  #scale_fill_manual(values = c("indianred3", "#EE962B", "#228232", "#2C699B")) +
+  ggtitle("SAGA occupancy by CAGE levels (CAGE-seq)") +
+  facet_wrap(~sample, scales = "free_y", ncol=2) +
+  theme(plot.title = element_text(size = 15, face = "bold")) +
+  xlab("Distance to TSS (bp)") + ylab("RPM (log2)")
+
+boxplot
+
+```
+
+# Session Info
+
+```{r}
+sessionInfo()
+```
